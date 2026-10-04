@@ -141,9 +141,9 @@ def calibrate(w):
             continue
         residual=(hp["fantasy_points"]-hp["Floor92_Base"]).to_numpy(float)
         raw_cov=float(np.mean(residual>=0))
-        # If 8% of holdout residuals are below q08, shifting the curve down by
-        # a negative q08 restores the requested 92% lower-bound coverage.
-        q08=float(np.quantile(residual,.08,method="linear"))
+        # Use the lower empirical 8th-percentile order statistic so the holdout
+        # lower bound is conservative and targets at least 92% sample coverage.
+        q08=float(np.quantile(residual,.08,method="lower"))
         correction=min(0.0,q08)
         adj_cov=float(np.mean(residual>=correction))
         audits.append((pos,correction,adj_cov,len(hp)))
