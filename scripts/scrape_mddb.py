@@ -114,6 +114,16 @@ def scrape_year(page, year: int, limit: int) -> List[dict]:
             break
 
     print(f"  {year}: visible player links after expansion = {last_count}")
+    try:
+        button_texts = page.locator("button").all_inner_texts()
+        pager_links = page.locator('a').evaluate_all("""
+          els => els.map(a => ({text:(a.textContent||'').replace(/\\s+/g,' ').trim(), href:a.getAttribute('href')||''}))
+                    .filter(x => /more|next|page|101|102|200|256/i.test(x.text + ' ' + x.href))
+        """)
+        print("MDDB BUTTONS:", button_texts)
+        print("MDDB PAGER LINKS:", pager_links)
+    except Exception:
+        pass
 
     # Print a compact DOM sample to GitHub Actions logs for layout diagnostics.
     try:
