@@ -130,39 +130,65 @@ def scrape_scouting_grade(page, year: int) -> List[dict]:
     raw = page.evaluate(
         """(year) => {
           const clean = s => (s || '').replace(/\s+/g,' ').trim();
-          const norm = s => clean(s).toLowerCase().replace(/[^a-z0-9]/g,'');
-          const rx = /\b(QB|RB|WR|TE|OT|IOL|EDGE|DT|LB|CB|S)\b/i;
-          const links = Array.from(document.querySelectorAll('a[href*="/' + year + '/players/"]'));
-          const out = [];
-          const seen = new Set();
+          const hrefRx = new RegExp('/' + year + '/players/');
+          const posRx = /\b(QB|RB|WR|TE|OT|IOL|EDGE|DT|LB|CB|S)\b/i;
+          const links = Array.from(document.querySelectorAll('a[href]')).filter(a => hrefRx.test(a.getAttribute('href') || ''));
 
+          // The page shows the first prospects twice: once in the table and again
+          // in the complete directory. Prefer the occurrence with the shortest
+          // anchor text, which is the directory's name-only link, while keeping
+          // the first occurrence's board order.
+          const map = new Map();
+          let order = 0;
           for (const a of links) {
-            const name = clean(a.textContent);
-            if (!name || name.length < 3) continue;
-            const key = norm(name);
-            if (!key || seen.has(key)) continue;
+            const href = a.getAttribute('href') || '';
+            if (!href) continue;
+            const anchorText = clean(a.textContent);
+            if (!anchorText) continue;
 
             let holder = a.closest('li') || a.closest('tr') || a.parentElement;
-            let txt = clean(holder && holder.textContent);
-            let position = '';
-            let college = '';
+            const holderText = clean(holder && holder.textContent);
+            const schoolLink = holder && holder.querySelector && holder.querySelector('a[href*="/colleges/"]');
+            const school = clean(schoolLink && schoolLink.textContent);
 
-            const pm = txt.match(rx);
+            if (!map.has(href)) {
+              map.set(href, {order: order++, name: anchorText, holderText, school});
+            } else {
+              const cur = map.get(href);
+              if (anchorText.length < cur.name.length) {
+                cur.name = anchorText;
+                cur.holderText = holderText;
+                cur.school = school;
+              }
+            }
+          }
+
+          const items = Array.from(map.values()).sort((a,b) => a.order - b.order);
+          const out = [];
+          for (const item of items) {
+            let name = clean(item.name);
+            const txt = clean(item.holderText);
+            let position = '';
+            let college = clean(item.school);
+
+            // Complete directory rows look like:
+            // "101. Xavier Atkins LB · Auburn".
+            const pm = txt.match(posRx);
             if (pm) {
               position = pm[1].toUpperCase();
+
               const after = txt.match(new RegExp('\\b' + position + '\\b\\s*[·•|]\\s*([^·•|]+)', 'i'));
-              const before = txt.match(new RegExp('([^·•|]+)\\s*[·•|]\\s*\\b' + position + '\\b', 'i'));
-              if (after) college = clean(after[1]);
-              else if (before) {
-                college = clean(before[1].replace(/^\d+\s*[-.]?\s*/, '').replace(name,''));
+              if (after && !college) college = clean(after[1]);
+
+              // If the name-only link was unavailable, trim card text back to
+              // the text preceding the school/position metadata.
+              if (name.length > 60 || name.includes('·') || name.includes('Round ')) {
+                const beforePos = txt.split(new RegExp('\\b' + position + '\\b', 'i'))[0] || '';
+                name = clean(beforePos.replace(/^\d+\s*[-.]?\s*/, ''));
               }
             }
 
-            // Directory rows can be very compact. School links are the cleanest fallback.
-            const schoolLink = holder && holder.querySelector && holder.querySelector('a[href*="/colleges/"]');
-            if (schoolLink) college = clean(schoolLink.textContent) || college;
-
-            seen.add(key);
+            if (!name || name.length < 3) continue;
             out.push({name, position, college});
           }
           return out;
