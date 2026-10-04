@@ -9,37 +9,32 @@ from typing import Dict, List
 
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 
-BASE = "https://www.nflmockdraftdatabase.com/big-boards/{year}/consensus-big-board-{year}"
+MDDB_URL = "https://www.nflmockdraftdatabase.com/big-boards/{year}/consensus-big-board-{year}"
+SCOUTING_GRADE_URL = "https://scoutinggrade.com/{year}-nfl-draft-big-board"
 
+POSITIONS = {"QB","RB","WR","TE","OT","IOL","EDGE","DT","LB","CB","S"}
 
 def norm_name(name: str) -> str:
     return re.sub(r"[^a-z0-9]", "", (name or "").lower())
 
-
 def normalize_pos(pos: str) -> str:
-    p = (pos or "").strip().upper()
+    p = (pos or "").strip().upper().replace("ED", "EDGE")
     aliases = {
-        "QB": "QB",
-        "RB": "RB", "FB": "RB",
-        "WR": "WR",
-        "TE": "TE",
-        "OT": "OT", "T": "OT", "LT": "OT", "RT": "OT",
-        "IOL": "IOL", "OG": "IOL", "G": "IOL", "C": "IOL", "OC": "IOL", "LG": "IOL", "RG": "IOL",
-        "EDGE": "EDGE", "DE": "EDGE",
-        "DT": "DT", "NT": "DT", "DL": "DT",
-        "LB": "LB", "ILB": "LB", "MLB": "LB", "OLB": "LB",
-        "CB": "CB", "DB": "CB",
-        "S": "S", "FS": "S", "SS": "S",
+        "FB":"RB",
+        "T":"OT","LT":"OT","RT":"OT",
+        "OG":"IOL","G":"IOL","C":"IOL","OC":"IOL","LG":"IOL","RG":"IOL","OL":"IOL",
+        "DE":"EDGE",
+        "DL":"DT","NT":"DT",
+        "ILB":"LB","MLB":"LB","OLB":"LB",
+        "DB":"CB",
+        "FS":"S","SS":"S",
     }
     return aliases.get(p, p)
 
-
 def current_future_years(count: int = 4) -> List[int]:
     now = datetime.now(timezone.utc)
-    # Before/during the NFL Draft (Jan-Apr), the current calendar year's class is still upcoming.
     first = now.year if now.month <= 4 else now.year + 1
     return list(range(first, first + count))
-
 
 def load_existing(path: Path) -> Dict[int, List[dict]]:
     by_year: Dict[int, List[dict]] = {}
@@ -50,217 +45,230 @@ def load_existing(path: Path) -> Dict[int, List[dict]]:
             for row in csv.DictReader(f):
                 try:
                     y = int(row.get("Draft_Year", ""))
+                    p = int(row.get("Projected_Pick", ""))
                 except Exception:
                     continue
-                by_year.setdefault(y, []).append(row)
+                if 1 <= p <= 256:
+                    by_year.setdefault(y, []).append(row)
     except Exception:
         pass
+    for y in by_year:
+        by_year[y].sort(key=lambda r: int(r["Projected_Pick"]))
     return by_year
 
-
-def _clean_text(s: str) -> str:
-    return re.sub(r"\s+", " ", (s or "").strip())
-
-
-def scrape_year(page, year: int, limit: int) -> List[dict]:
-    url = BASE.format(year=year)
-    print(f"Fetching {year}: {url}")
+def scrape_mddb_top100(page, year: int) -> List[dict]:
+    url = MDDB_URL.format(year=year)
+    print(f"Fetching MDDB {year}: {url}")
     resp = page.goto(url, wait_until="domcontentloaded", timeout=45000)
     if resp is not None and resp.status == 404:
-        print(f"  {year}: board not available (404)")
         return []
-    page.wait_for_timeout(3500)
+    page.wait_for_timeout(2500)
 
-    # Expand the board. MDDB currently renders about 100 prospects initially and
-    # exposes the rest through a load-more control rather than pure infinite scroll.
     stable = 0
-    last_count = page.locator('a[href*="/players/"]').count()
-    for _ in range(40):
-        if last_count >= limit:
+    last = -1
+    for _ in range(25):
+        count = page.locator('a[href*="/players/"]').count()
+        if count >= 100:
             break
-
-        clicked = False
-        for pattern in [r"load\s*more", r"show\s*more", r"view\s*more", r"more\s*prospects", r"next"]:
-            btn = page.get_by_role("button", name=re.compile(pattern, re.I))
-            if btn.count() and btn.first.is_visible():
-                try:
-                    btn.first.click(timeout=3000)
-                    clicked = True
-                    break
-                except Exception:
-                    pass
-
-        if not clicked:
-            for pattern in [r"load\s*more", r"show\s*more", r"view\s*more", r"more\s*prospects"]:
-                link = page.get_by_role("link", name=re.compile(pattern, re.I))
-                if link.count() and link.first.is_visible():
-                    try:
-                        link.first.click(timeout=3000)
-                        clicked = True
-                        break
-                    except Exception:
-                        pass
-
         page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-        page.wait_for_timeout(900)
+        page.wait_for_timeout(600)
         new_count = page.locator('a[href*="/players/"]').count()
-
-        if new_count > last_count:
-            stable = 0
-        else:
-            stable += 1
-        last_count = new_count
-        if stable >= 5:
+        stable = stable + 1 if new_count == last else 0
+        last = new_count
+        if stable >= 3:
             break
 
-    print(f"  {year}: visible player links after expansion = {last_count}")
-    paywall_visible = page.get_by_role("link", name=re.compile(r"See More with Mock\+ Silver", re.I)).count() > 0
-    if paywall_visible and last_count < limit:
-        print(f"  {year}: public board is paywalled after the currently exposed rows; Mock+ Silver is required for more.")
-
-    # Print a compact DOM sample to GitHub Actions logs for layout diagnostics.
-    try:
-        first_link = page.locator('a[href*="/players/"]').first
-        if first_link.count():
-            sample = first_link.evaluate("el => { let n=el; for(let i=0;i<4 && n.parentElement;i++) n=n.parentElement; return n.outerHTML; }")
-            print("MDDB DOM SAMPLE:", sample[:5000])
-    except Exception:
-        pass
-
-    # Preferred extraction: board cards. Current MDDB layout uses Tailwind classes.
-    rows = page.evaluate(
-        """
-        ({limit}) => {
-          const clean = s => (s || '').replace(/\s+/g, ' ').trim();
-          const cards = Array.from(document.querySelectorAll('.mock-list-item'));
+    raw = page.evaluate(
+        """() => {
+          const clean = s => (s || '').replace(/\s+/g,' ').trim();
+          const links = Array.from(document.querySelectorAll('a[href*="/players/"]'));
           const out = [];
-          for (let idx = 0; idx < cards.length; idx++) {
-            const card = cards[idx];
-            const rankNode = card.querySelector('.pick-number');
-            const nameNode = card.querySelector('.player-name') || card.querySelector('a[href*="/players/"]');
-            const detailNode = card.querySelector('.player-details.college-details') || card.querySelector('.college-details');
-            const posNode = card.querySelector('span.text-xs.font-bold');
-            const schoolNode = card.querySelector('a[href*="/colleges/"]');
-            const rankMatch = clean(rankNode && rankNode.textContent).match(/\d+/);
-            const rank = rankMatch ? Number(rankMatch[0]) : (idx + 1);
-            const name = clean(nameNode && nameNode.textContent);
-            const details = clean(detailNode && detailNode.textContent);
-            const pieces = details.split('|').map(clean);
-            const position = clean(posNode && posNode.textContent) || pieces[0] || '';
-            const college = clean(schoolNode && schoolNode.textContent) || pieces[1] || '';
-            if (!rank || !name || rank > limit) continue;
-            out.push({rank, name, position, college});
+          const seen = new Set();
+          for (const a of links) {
+            const name = clean(a.textContent);
+            const href = a.getAttribute('href') || '';
+            if (!name || name.length < 3 || !href.includes('/players/')) continue;
+            const k = name.toLowerCase().replace(/[^a-z0-9]/g,'');
+            if (!k || seen.has(k)) continue;
+            seen.add(k);
+            out.push({name, href});
+            if (out.length >= 100) break;
           }
           return out;
-        }
-        """,
-        {"limit": limit},
+        }"""
     )
 
-        # Fallback known to work for this site: player links are emitted in board order.
-    if len(rows) < 25:
-        rows = page.evaluate(
-            """
-            ({limit}) => {
-              const clean = s => (s || '').replace(/\s+/g, ' ').trim();
-              const links = Array.from(document.querySelectorAll('a[href*="/players/"]'));
-              const seen = new Set();
-              const out = [];
-              for (const link of links) {
-                const name = clean(link.textContent);
-                if (!name || name.length < 3) continue;
-                let node = link.parentElement;
-                let position = '';
-                let college = '';
-                for (let depth = 0; node && depth < 6; depth++, node = node.parentElement) {
-                  const detail = node.querySelector && (node.querySelector('.player-details.college-details') || node.querySelector('.college-details'));
-                  if (detail) {
-                    const parts = clean(detail.textContent).split('|').map(clean);
-                    position = parts[0] || '';
-                    college = parts[1] || '';
-                    break;
-                  }
-                }
-                if (!position) {
-                  const parent = link.parentElement;
-                  if (parent) {
-                    const kids = Array.from(parent.children);
-                    for (const kid of kids) {
-                      if (kid === link) continue;
-
-                      // Current MDDB card layout: the player name and a flex row are siblings.
-                      // The flex row's first child is position; second child is the school link.
-                      const style = (kid.getAttribute && kid.getAttribute('style')) || '';
-                      if (style.includes('display: flex') || style.includes('display:flex')) {
-                        const children = Array.from(kid.children || []);
-                        if (children.length > 0) position = clean(children[0].textContent);
-                        if (children.length > 1) {
-                          const schoolLink = children[1].tagName === 'A'
-                            ? children[1]
-                            : (children[1].querySelector && children[1].querySelector('a'));
-                          if (schoolLink) college = clean(schoolLink.getAttribute('aria-label') || schoolLink.textContent);
-                        }
-                        if (position) break;
-                      }
-
-                      const txt = clean(kid.textContent);
-                      if (/^(QB|RB|FB|WR|TE|OT|T|IOL|OG|G|C|EDGE|DE|DT|NT|DL|LB|ILB|MLB|OLB|CB|DB|S|FS|SS)\b/i.test(txt)) {
-                        const parts = txt.split('|').map(clean);
-                        position = parts[0] || '';
-                        college = parts[1] || '';
-                        break;
-                      }
-                    }
-                  }
-                }
-                const key = [name.toLowerCase(), position.toUpperCase(), college.toLowerCase()].join('|');
-                if (seen.has(key)) continue;
-                seen.add(key);
-                out.push({rank: out.length + 1, name, position, college});
-                if (out.length >= limit) break;
-              }
-              return out;
-            }
-            """,
-            {"limit": limit},
-        )
-
-    cleaned = []
-    seen = set()
-    for item in sorted(rows, key=lambda x: int(x.get("rank") or 999999)):
-        try:
-            rank = int(item.get("rank"))
-        except Exception:
-            continue
-        if rank < 1 or rank > limit:
-            continue
-        name = _clean_text(item.get("name", ""))
+    rows = []
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    for i, item in enumerate(raw[:100], start=1):
+        name = re.sub(r"\s+", " ", item.get("name","")).strip()
         if not name:
             continue
-        pos = normalize_pos(_clean_text(item.get("position", "")))
-        college = _clean_text(item.get("college", ""))
-        key = f"{norm_name(name)}|{pos}"
-        if key in seen:
+        rows.append({
+            "Draft_Year": year,
+            "Projected_Pick": i,
+            "Player": name,
+            "Position": "",
+            "College": "",
+            "Name_Key": norm_name(name),
+            "Match_Key": "",
+            "Source_URL": url,
+            "Last_Updated": now,
+            "Status": "MDDB consensus top 100",
+        })
+    print(f"  MDDB {year}: {len(rows)} rows")
+    return rows
+
+def scrape_scouting_grade(page, year: int) -> List[dict]:
+    url = SCOUTING_GRADE_URL.format(year=year)
+    print(f"Fetching ScoutingGrade {year}: {url}")
+    resp = page.goto(url, wait_until="domcontentloaded", timeout=45000)
+    if resp is not None and resp.status == 404:
+        return []
+    page.wait_for_timeout(1500)
+
+    raw = page.evaluate(
+        """(year) => {
+          const clean = s => (s || '').replace(/\s+/g,' ').trim();
+          const norm = s => clean(s).toLowerCase().replace(/[^a-z0-9]/g,'');
+          const rx = /\b(QB|RB|WR|TE|OT|IOL|EDGE|DT|LB|CB|S)\b/i;
+          const links = Array.from(document.querySelectorAll('a[href*="/' + year + '/players/"]'));
+          const out = [];
+          const seen = new Set();
+
+          for (const a of links) {
+            const name = clean(a.textContent);
+            if (!name || name.length < 3) continue;
+            const key = norm(name);
+            if (!key || seen.has(key)) continue;
+
+            let holder = a.closest('li') || a.closest('tr') || a.parentElement;
+            let txt = clean(holder && holder.textContent);
+            let position = '';
+            let college = '';
+
+            const pm = txt.match(rx);
+            if (pm) {
+              position = pm[1].toUpperCase();
+              const after = txt.match(new RegExp('\\b' + position + '\\b\\s*[·•|]\\s*([^·•|]+)', 'i'));
+              const before = txt.match(new RegExp('([^·•|]+)\\s*[·•|]\\s*\\b' + position + '\\b', 'i'));
+              if (after) college = clean(after[1]);
+              else if (before) {
+                college = clean(before[1].replace(/^\d+\s*[-.]?\s*/, '').replace(name,''));
+              }
+            }
+
+            // Directory rows can be very compact. School links are the cleanest fallback.
+            const schoolLink = holder && holder.querySelector && holder.querySelector('a[href*="/colleges/"]');
+            if (schoolLink) college = clean(schoolLink.textContent) || college;
+
+            seen.add(key);
+            out.push({name, position, college});
+          }
+          return out;
+        }""",
+        year
+    )
+
+    rows = []
+    seen = set()
+    for item in raw:
+        name = re.sub(r"\s+", " ", item.get("name","")).strip()
+        key = norm_name(name)
+        if not key or key in seen:
             continue
         seen.add(key)
-        cleaned.append({
-            "Draft_Year": year,
-            "Projected_Pick": rank,
+        pos = normalize_pos(item.get("position",""))
+        college = re.sub(r"\s+", " ", item.get("college","")).strip()
+        rows.append({
+            "Rank": len(rows) + 1,
             "Player": name,
             "Position": pos,
             "College": college,
-            "Name_Key": norm_name(name),
-            "Match_Key": key,
+            "Name_Key": key,
             "Source_URL": url,
-            "Last_Updated": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-            "Status": ("MDDB consensus; public board truncated by Mock+ paywall" if paywall_visible and len(rows) < limit else f"MDDB consensus; capped at {limit}"),
         })
-        if len(cleaned) >= limit:
+    print(f"  ScoutingGrade {year}: {len(rows)} unique rows")
+    return rows
+
+def build_hybrid_year(mddb: List[dict], deep: List[dict], existing: List[dict], year: int) -> List[dict]:
+    # Never replace a previously good board with a partial MDDB load.
+    if len(mddb) < 100:
+        if existing:
+            print(f"  {year}: MDDB returned only {len(mddb)}; preserving previous {len(existing)} rows")
+            return existing[:256]
+        raise RuntimeError(f"MDDB returned only {len(mddb)} top-board rows")
+
+    deep_by_name = {r["Name_Key"]: r for r in deep}
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+    out = []
+    seen = set()
+
+    # 1-100: user's preferred MDDB ordering.
+    for r in mddb[:100]:
+        key = r["Name_Key"]
+        meta = deep_by_name.get(key)
+        pos = normalize_pos(meta["Position"]) if meta else ""
+        college = meta["College"] if meta else ""
+        rr = dict(r)
+        rr["Position"] = pos
+        rr["College"] = college
+        rr["Match_Key"] = f"{key}|{pos}" if pos else key
+        rr["Last_Updated"] = now
+        rr["Status"] = "MDDB consensus top 100"
+        out.append(rr)
+        seen.add(key)
+
+    # 101-256: deep-board fallback, preserving its relative ordering while
+    # removing anyone already represented in MDDB's top 100.
+    supplemental = []
+    for r in deep:
+        key = r["Name_Key"]
+        if not key or key in seen:
+            continue
+        supplemental.append(r)
+        seen.add(key)
+        if len(supplemental) >= 156:
             break
 
-    print(f"  {year}: {len(cleaned)} rows")
-    return cleaned
+    # If the deep source is temporarily short, retain prior supplemental rows
+    # not already represented rather than fabricating players/ranks.
+    if len(supplemental) < 156 and existing:
+        old = [r for r in existing if int(r.get("Projected_Pick","0") or 0) > 100]
+        for r in old:
+            key = norm_name(r.get("Player",""))
+            if not key or key in seen:
+                continue
+            supplemental.append({
+                "Player": r.get("Player",""),
+                "Position": normalize_pos(r.get("Position","")),
+                "College": r.get("College",""),
+                "Name_Key": key,
+                "Source_URL": r.get("Source_URL",""),
+            })
+            seen.add(key)
+            if len(supplemental) >= 156:
+                break
 
+    for idx, r in enumerate(supplemental[:156], start=101):
+        pos = normalize_pos(r.get("Position",""))
+        key = r["Name_Key"]
+        out.append({
+            "Draft_Year": year,
+            "Projected_Pick": idx,
+            "Player": r["Player"],
+            "Position": pos,
+            "College": r.get("College",""),
+            "Name_Key": key,
+            "Match_Key": f"{key}|{pos}" if pos else key,
+            "Source_URL": r.get("Source_URL", SCOUTING_GRADE_URL.format(year=year)),
+            "Last_Updated": now,
+            "Status": "ScoutingGrade supplemental after MDDB top 100",
+        })
+
+    print(f"  {year}: hybrid board = {len(out)} rows")
+    return out[:256]
 
 def main() -> int:
     ap = argparse.ArgumentParser()
@@ -269,8 +277,8 @@ def main() -> int:
     ap.add_argument("--years", nargs="*", type=int)
     args = ap.parse_args()
 
-    if args.limit < 1 or args.limit > 256:
-        raise SystemExit("--limit must be between 1 and 256")
+    if args.limit != 256:
+        print("This workflow is designed to maintain exactly the top 256 available projections per class.", file=sys.stderr)
 
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -293,17 +301,17 @@ def main() -> int:
         try:
             for year in years:
                 try:
-                    rows = scrape_year(page, year, args.limit)
-                    if rows:
-                        all_rows.extend(rows)
-                    elif existing.get(year):
-                        print(f"  {year}: preserving previous snapshot")
-                        all_rows.extend(existing[year][: args.limit])
+                    mddb = scrape_mddb_top100(page, year)
+                    deep = scrape_scouting_grade(page, year)
+                    if not mddb and not deep and not existing.get(year):
+                        continue
+                    rows = build_hybrid_year(mddb, deep, existing.get(year, []), year)
+                    all_rows.extend(rows)
                 except (PlaywrightTimeoutError, Exception) as exc:
                     failures.append(f"{year}: {exc}")
                     if existing.get(year):
-                        print(f"  {year}: scrape failed, preserving prior snapshot: {exc}")
-                        all_rows.extend(existing[year][: args.limit])
+                        print(f"  {year}: scrape failed; preserving prior snapshot: {exc}")
+                        all_rows.extend(existing[year][:256])
                     else:
                         print(f"  {year}: scrape failed with no prior snapshot: {exc}", file=sys.stderr)
         finally:
@@ -311,8 +319,8 @@ def main() -> int:
 
     all_rows.sort(key=lambda r: (int(r["Draft_Year"]), int(r["Projected_Pick"])))
     fields = [
-        "Draft_Year", "Projected_Pick", "Player", "Position", "College",
-        "Name_Key", "Match_Key", "Source_URL", "Last_Updated", "Status"
+        "Draft_Year","Projected_Pick","Player","Position","College",
+        "Name_Key","Match_Key","Source_URL","Last_Updated","Status"
     ]
     with output.open("w", encoding="utf-8", newline="") as f:
         w = csv.DictWriter(f, fieldnames=fields)
@@ -324,14 +332,12 @@ def main() -> int:
         counts[row["Draft_Year"]] = counts.get(row["Draft_Year"], 0) + 1
     print("Wrote", output, counts)
 
-    # Do not fail the workflow when a far-future board is absent if at least one class worked.
     if not all_rows:
         print("No draft-projection rows available.", file=sys.stderr)
         return 1
     if failures:
         print("Warnings:", *failures, sep="\n- ")
     return 0
-
 
 if __name__ == "__main__":
     raise SystemExit(main())
