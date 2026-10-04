@@ -171,20 +171,33 @@ def scrape_scouting_grade(page, year: int) -> List[dict]:
             let position = '';
             let college = clean(item.school);
 
-            // Complete directory rows look like:
-            // "101. Xavier Atkins LB · Auburn".
-            const pm = txt.match(posRx);
-            if (pm) {
-              position = pm[1].toUpperCase();
+            // On the complete directory, the anchor itself currently renders as
+            // "Player Name POS · School". Parse that directly when available.
+            const direct = name.match(/^(.*?)\s+(QB|RB|WR|TE|OT|IOL|EDGE|DT|LB|CB|S)\s*[·•|]\s*(.+)$/i);
+            if (direct) {
+              name = clean(direct[1]);
+              position = direct[2].toUpperCase();
+              if (!college) college = clean(direct[3]);
+            }
 
-              const after = txt.match(new RegExp('\\b' + position + '\\b\\s*[·•|]\\s*([^·•|]+)', 'i'));
-              if (after && !college) college = clean(after[1]);
+            // Fallback to the surrounding row text.
+            if (!position) {
+              const pm = txt.match(posRx);
+              if (pm) {
+                position = pm[1].toUpperCase();
+                const after = txt.match(new RegExp('\\b' + position + '\\b\\s*[·•|]\\s*([^·•|]+)', 'i'));
+                if (after && !college) college = clean(after[1]);
+              }
+            }
 
-              // If the name-only link was unavailable, trim card text back to
-              // the text preceding the school/position metadata.
-              if (name.length > 60 || name.includes('·') || name.includes('Round ')) {
-                const beforePos = txt.split(new RegExp('\\b' + position + '\\b', 'i'))[0] || '';
-                name = clean(beforePos.replace(/^\d+\s*[-.]?\s*/, ''));
+            // Top-table anchors can include school + position + round. Strip
+            // those suffixes only when the anchor still looks like card text.
+            if (name.includes('·') || name.includes('Round ')) {
+              const card = name.match(/^(.*?)\s+(.+?)\s*[·•|]\s*(QB|RB|WR|TE|OT|IOL|EDGE|DT|LB|CB|S)\s*[·•|]\s*Round\s+\d+/i);
+              if (card) {
+                name = clean(card[1]);
+                if (!position) position = card[3].toUpperCase();
+                if (!college) college = clean(card[2]);
               }
             }
 
