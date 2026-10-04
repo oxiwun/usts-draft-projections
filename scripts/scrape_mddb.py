@@ -144,6 +144,22 @@ def scrape_year(page, year: int, limit: int) -> List[dict]:
                     const kids = Array.from(parent.children);
                     for (const kid of kids) {
                       if (kid === link) continue;
+
+                      // Current MDDB card layout: the player name and a flex row are siblings.
+                      // The flex row's first child is position; second child is the school link.
+                      const style = (kid.getAttribute && kid.getAttribute('style')) || '';
+                      if (style.includes('display: flex') || style.includes('display:flex')) {
+                        const children = Array.from(kid.children || []);
+                        if (children.length > 0) position = clean(children[0].textContent);
+                        if (children.length > 1) {
+                          const schoolLink = children[1].tagName === 'A'
+                            ? children[1]
+                            : (children[1].querySelector && children[1].querySelector('a'));
+                          if (schoolLink) college = clean(schoolLink.getAttribute('aria-label') || schoolLink.textContent);
+                        }
+                        if (position) break;
+                      }
+
                       const txt = clean(kid.textContent);
                       if (/^(QB|RB|FB|WR|TE|OT|T|IOL|OG|G|C|EDGE|DE|DT|NT|DL|LB|ILB|MLB|OLB|CB|DB|S|FS|SS)\b/i.test(txt)) {
                         const parts = txt.split('|').map(clean);
