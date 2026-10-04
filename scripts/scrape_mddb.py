@@ -15,10 +15,14 @@ SCOUTING_GRADE_URL = "https://scoutinggrade.com/{year}-nfl-draft-big-board"
 POSITIONS = {"QB","RB","WR","TE","OT","IOL","EDGE","DT","LB","CB","S"}
 
 def norm_name(name: str) -> str:
-    return re.sub(r"[^a-z0-9]", "", (name or "").lower())
+    s = (name or "").lower().strip()
+    s = re.sub(r"\b(jr|sr|ii|iii|iv|v)\b\.?$", "", s).strip()
+    return re.sub(r"[^a-z0-9]", "", s)
 
 def normalize_pos(pos: str) -> str:
-    p = (pos or "").strip().upper().replace("ED", "EDGE")
+    p = (pos or "").strip().upper()
+    if p == "ED":
+        p = "EDGE"
     aliases = {
         "FB":"RB",
         "T":"OT","LT":"OT","RT":"OT",
