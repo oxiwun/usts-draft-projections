@@ -2,6 +2,12 @@ name: Refresh MDDB consensus boards
 
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/refresh-mddb.yml'
+      - 'scripts/scrape_mddb.py'
+      - 'requirements.txt'
   schedule:
     # Once daily. 11:15 UTC is 6:15/7:15 AM Eastern depending on DST.
     - cron: '15 11 * * *'
