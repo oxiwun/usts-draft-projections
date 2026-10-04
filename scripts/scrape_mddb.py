@@ -114,16 +114,9 @@ def scrape_year(page, year: int, limit: int) -> List[dict]:
             break
 
     print(f"  {year}: visible player links after expansion = {last_count}")
-    try:
-        button_texts = page.locator("button").all_inner_texts()
-        pager_links = page.locator('a').evaluate_all("""
-          els => els.map(a => ({text:(a.textContent||'').replace(/\\s+/g,' ').trim(), href:a.getAttribute('href')||''}))
-                    .filter(x => /more|next|page|101|102|200|256/i.test(x.text + ' ' + x.href))
-        """)
-        print("MDDB BUTTONS:", button_texts)
-        print("MDDB PAGER LINKS:", pager_links)
-    except Exception:
-        pass
+    paywall_visible = page.get_by_role("link", name=re.compile(r"See More with Mock\+ Silver", re.I)).count() > 0
+    if paywall_visible and last_count < limit:
+        print(f"  {year}: public board is paywalled after the currently exposed rows; Mock+ Silver is required for more.")
 
     # Print a compact DOM sample to GitHub Actions logs for layout diagnostics.
     try:
@@ -260,7 +253,7 @@ def scrape_year(page, year: int, limit: int) -> List[dict]:
             "Match_Key": key,
             "Source_URL": url,
             "Last_Updated": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-            "Status": f"MDDB consensus; top {limit}",
+            "Status": ("MDDB consensus; public board truncated by Mock+ paywall" if paywall_visible and len(rows) < limit else f"MDDB consensus; capped at {limit}"),
         })
         if len(cleaned) >= limit:
             break
