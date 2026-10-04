@@ -71,51 +71,82 @@ def scrape_year(page, year: int, limit: int) -> List[dict]:
         return []
     page.wait_for_timeout(3500)
 
-    # Trigger lazy loading / virtualization if present.
+    # Expand the board. MDDB currently renders about 100 prospects initially and
+    # exposes the rest through a load-more control rather than pure infinite scroll.
     stable = 0
-    last_count = -1
-    for _ in range(30):
-        count = page.locator('a[href*="/players/"]').count()
-        if count >= limit:
+    last_count = page.locator('a[href*="/players/"]').count()
+    for _ in range(40):
+        if last_count >= limit:
             break
+
+        clicked = False
+        for pattern in [r"load\s*more", r"show\s*more", r"view\s*more", r"more\s*prospects", r"next"]:
+            btn = page.get_by_role("button", name=re.compile(pattern, re.I))
+            if btn.count() and btn.first.is_visible():
+                try:
+                    btn.first.click(timeout=3000)
+                    clicked = True
+                    break
+                except Exception:
+                    pass
+
+        if not clicked:
+            for pattern in [r"load\s*more", r"show\s*more", r"view\s*more", r"more\s*prospects"]:
+                link = page.get_by_role("link", name=re.compile(pattern, re.I))
+                if link.count() and link.first.is_visible():
+                    try:
+                        link.first.click(timeout=3000)
+                        clicked = True
+                        break
+                    except Exception:
+                        pass
+
         page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-        page.wait_for_timeout(700)
+        page.wait_for_timeout(900)
         new_count = page.locator('a[href*="/players/"]').count()
-        if new_count == last_count:
-            stable += 1
-        else:
+
+        if new_count > last_count:
             stable = 0
+        else:
+            stable += 1
         last_count = new_count
-        if stable >= 3:
+        if stable >= 5:
             break
+
+    print(f"  {year}: visible player links after expansion = {last_count}")
 
     # Print a compact DOM sample to GitHub Actions logs for layout diagnostics.
     try:
         first_link = page.locator('a[href*="/players/"]').first
         if first_link.count():
-            sample = first_link.evaluate("el => (el.parentElement && el.parentElement.parentElement ? el.parentElement.parentElement.outerHTML : el.outerHTML)")
+            sample = first_link.evaluate("el => { let n=el; for(let i=0;i<4 && n.parentElement;i++) n=n.parentElement; return n.outerHTML; }")
             print("MDDB DOM SAMPLE:", sample[:5000])
     except Exception:
         pass
 
-    # Preferred extraction: board cards with explicit rank/name/detail classes.
+    # Preferred extraction: board cards. Current MDDB layout uses Tailwind classes.
     rows = page.evaluate(
         """
         ({limit}) => {
           const clean = s => (s || '').replace(/\s+/g, ' ').trim();
           const cards = Array.from(document.querySelectorAll('.mock-list-item'));
           const out = [];
-          for (const card of cards) {
+          for (let idx = 0; idx < cards.length; idx++) {
+            const card = cards[idx];
             const rankNode = card.querySelector('.pick-number');
             const nameNode = card.querySelector('.player-name') || card.querySelector('a[href*="/players/"]');
             const detailNode = card.querySelector('.player-details.college-details') || card.querySelector('.college-details');
+            const posNode = card.querySelector('span.text-xs.font-bold');
+            const schoolNode = card.querySelector('a[href*="/colleges/"]');
             const rankMatch = clean(rankNode && rankNode.textContent).match(/\d+/);
-            const rank = rankMatch ? Number(rankMatch[0]) : null;
+            const rank = rankMatch ? Number(rankMatch[0]) : (idx + 1);
             const name = clean(nameNode && nameNode.textContent);
             const details = clean(detailNode && detailNode.textContent);
-            if (!rank || !name || rank > limit) continue;
             const pieces = details.split('|').map(clean);
-            out.push({rank, name, position: pieces[0] || '', college: pieces[1] || ''});
+            const position = clean(posNode && posNode.textContent) || pieces[0] || '';
+            const college = clean(schoolNode && schoolNode.textContent) || pieces[1] || '';
+            if (!rank || !name || rank > limit) continue;
+            out.push({rank, name, position, college});
           }
           return out;
         }
@@ -123,7 +154,7 @@ def scrape_year(page, year: int, limit: int) -> List[dict]:
         {"limit": limit},
     )
 
-    # Fallback known to work for this site: player links are emitted in board order.
+        # Fallback known to work for this site: player links are emitted in board order.
     if len(rows) < 25:
         rows = page.evaluate(
             """
