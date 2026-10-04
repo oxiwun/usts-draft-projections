@@ -89,6 +89,15 @@ def scrape_year(page, year: int, limit: int) -> List[dict]:
         if stable >= 3:
             break
 
+    # Print a compact DOM sample to GitHub Actions logs for layout diagnostics.
+    try:
+        first_link = page.locator('a[href*="/players/"]').first
+        if first_link.count():
+            sample = first_link.evaluate("el => (el.parentElement && el.parentElement.parentElement ? el.parentElement.parentElement.outerHTML : el.outerHTML)")
+            print("MDDB DOM SAMPLE:", sample[:5000])
+    except Exception:
+        pass
+
     # Preferred extraction: board cards with explicit rank/name/detail classes.
     rows = page.evaluate(
         """
