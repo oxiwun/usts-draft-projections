@@ -1,0 +1,39 @@
+name: Refresh FUS92 calibration
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/build_fus92_calibration.py'
+      - '.github/workflows/refresh-fus92-calibration.yml'
+  schedule:
+    - cron: '45 12 * * 0'
+
+permissions:
+  contents: write
+
+jobs:
+  calibrate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        run: pip install pandas numpy
+      - name: Build calibration
+        run: python scripts/build_fus92_calibration.py --output data/fus92_calibration.csv
+      - name: Commit changed calibration
+        run: |
+          if git diff --quiet -- data/fus92_calibration.csv; then
+            echo "No calibration changes."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/fus92_calibration.csv
+          git commit -m "Update FUS92 calibration"
+          git push
