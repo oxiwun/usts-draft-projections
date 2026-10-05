@@ -6,14 +6,9 @@
 function refreshDraftProjectionsGitHub() {
   const ss = SpreadsheetApp.getActive();
   const target = ss.getSheetByName('Draft_Projection');
-  const setup = ss.getSheetByName('MDDB_Setup');
   if (!target) throw new Error('Missing Draft_Projection sheet.');
-  if (!setup) throw new Error('Missing MDDB_Setup sheet.');
 
-  const csvUrl = String(setup.getRange('B10').getValue() || '').trim();
-  if (!csvUrl || !/^https:\/\/raw\.githubusercontent\.com\//i.test(csvUrl)) {
-    throw new Error('Put the raw GitHub CSV URL in MDDB_Setup!B10 first.');
-  }
+  const csvUrl = 'https://raw.githubusercontent.com/oxiwun/usts-draft-projections/main/data/draft_projection.csv';
 
   const oldRows = target.getLastRow() > 1
     ? target.getRange(2, 1, target.getLastRow() - 1, 10).getValues()
